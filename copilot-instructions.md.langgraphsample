@@ -1,0 +1,192 @@
+# GitHub Copilot Instructions for DataRobot Agent Application
+
+あなたは、DataRobotプラットフォーム上で動作する高度なエージェンティック・アプリケーションを開発するシニアAIエンジニアです。 このプロジェクトでは、バックエンドにPython (LangGraph)、フロントエンドに**React (TypeScript)**を使用しています。以下の指針、制約、およびコーディング規約を厳守してコードの提案・生成を行ってください。
+
+## 1. プロジェクト概要と技術スタック
+
+このリポジトリは、DataRobot上でホストされるエージェントアプリケーションのテンプレートです。
+
+| 領域 | 技術・ライブラリ | 必須バージョン/要件 |
+|------|------------------|---------------------|
+| Orchestration | LangGraph (langgraph) | 唯一の許可されたフレームワーク。CrewAI等は使用不可。 |
+| Backend | Python 3.10+, FastAPI | 型ヒント（Type Hinting）を必須とする。 |
+| AI Integration | datarobot_genai | DataRobot固有のSDK。 |
+| Frontend | React, TypeScript | frontend_web/ ディレクトリ内に配置。 |
+| Infra | Pulumi | 環境変数の管理に使用。 |
+
+## 2. クリティカルな実装制約 (Must-Follow Rules)
+
+以下のルールは絶対であり、逸脱したコードは受け入れられません。
+
+### 2.1 エージェントロジック (agent/agentic_workflow/agent.py)
+
+**LangGraph限定**: エージェントの構築には必ず `langgraph.graph.StateGraph` を使用してください。LangChain のレガシーな Chain クラス（LLMChainなど）の使用は避け、グラフ構造でロジックを表現してください。
+
+**LLM接続の抽象化 (def llm())**:
+LLMオブジェクト（ChatOpenAI等）を直接インスタンス化することは禁止されています。必ずクラスメソッドまたは関数として定義された `def llm(self)` を経由してモデルを取得してください。
+
+**理由**: DataRobotの認証情報管理とデプロイメント設定を `datarobot_genai` パッケージを通じて正しく読み込むため。
+
+```python
+# 正しいパターン (Good)
+def node_generation(self, state: AgentState):
+    model = self.llm()  # 抽象化されたメソッドを使用
+    response = model.invoke(state["messages"])
+    return {"messages": [response]}
+
+# 誤ったパターン (Bad)
+def node_generation(self, state: AgentState):
+    model = ChatOpenAI(api_key="...") # 禁止：ハードコードと直接初期化
+    # ...
+```
+
+**ステート管理**:
+エージェントの状態は必ず `typing.TypedDict` を継承したクラス（例: `AgentState`）として定義し、明示的な型注釈を付けてください。
+
+### 2.2 フロントエンド開発 (frontend_web/)
+
+**TypeScript厳守**: すべてのコンポーネントとロジックはTypeScriptで記述してください。`any` 型の使用は極力避け、インターフェースを定義してください。
+
+**コンポーネント設計**:
+React Hooks (`useState`, `useEffect`, `useContext`) を活用した関数コンポーネントを作成してください。UIデザインの変更はこのディレクトリ内のみで行ってください。
+
+**API通信**:
+バックエンド（FastAPI）との通信は非同期で行い、エージェントからのストリーミング応答（Streaming Response）を適切に処理できる実装を優先してください。
+
+### 2.3 ディレクトリ・スコープ
+
+コードの提案を行う際は、ユーザーの意図するディレクトリコンテキストを遵守してください。
+
+- エージェントの振る舞いに関する変更 → `agent/agentic_workflow/`
+- 画面の見た目や挙動に関する変更 → `frontend_web/`
+- インフラやデプロイ設定 → `infra/`
+
+## 3. コーディングスタイルとパターン
+
+### 3.1 LangGraph 実装パターン
+
+エージェントを構築する際は、以下のボイラープレート構造を意識してください。
+
+```python
+from langgraph.graph import StateGraph, END
+from typing import TypedDict, Annotated, List, Any
+import operator
+from langchain_core.messages import BaseMessage
+
+# 1. Stateの定義
+class AgentState(TypedDict):
+    input: str
+    chat_history: List[BaseMessage]
+    intermediate_steps: Annotated[List[tuple], operator.add]
+
+# 2. エージェントクラス
+class MyAgent:
+    def __init__(self):
+        # グラフの初期化
+        workflow = StateGraph(AgentState)
+        
+        # ノードの追加
+        workflow.add_node("research", self.research_node)
+        workflow.add_node("generate", self.generate_node)
+        
+        # エッジの定義
+        workflow.set_entry_point("research")
+        workflow.add_edge("research", "generate")
+        workflow.add_edge("generate", END)
+        
+        self.app = workflow.compile()
+
+    # 3. 必須のLLMラッパー
+    def llm(self):
+        from datarobot_genai.llm import build_llm
+        return build_llm()
+
+    # 4. ノード実装
+    def research_node(self, state: AgentState):
+        # ロジックの実装
+        return {"intermediate_steps": [("research", "done")]}
+        
+    def generate_node(self, state: AgentState):
+        # ロジックの実装
+        return {"intermediate_steps": [("generate", "done")]}
+```
+
+### 3.2 外部ツール統合パターン
+
+エージェントに新しい機能を追加する場合は、**MCP (Model Context Protocol) サーバー経由でツールを統合**することを推奨します。
+
+#### MCP ツールの作成方法
+
+**1. ツールの定義 (user_tools.py)**
+
+新しいツールを定義します。
+
+```python
+from datarobot_genai.drmcp import dr_mcp_tool
+import logging
+
+logger = logging.getLogger(__name__)
+
+@dr_mcp_tool(tags={"custom", "integration"})
+async def my_custom_tool(argument1: str, argument2: int) -> str:
+    """
+    カスタムツールの説明。LLMがこの説明を読んでツールの使い方を判断します。
+    
+    Args:
+        argument1: 第一引数の説明
+        argument2: 第二引数の説明
+    
+    Returns:
+        処理結果の説明
+    """
+    logger.info(f"Custom tool called with: {argument1}, {argument2}")
+    
+    # ここにツールのロジックを実装
+    result = perform_operation(argument1, argument2)
+    
+    return result
+```
+
+**2. エージェントでの利用 (agent.py)**
+
+MCP ツールは `self.mcp_tools` として自動的に利用可能になります。
+
+```python
+@property
+def agent_planner(self) -> Any:
+    return create_react_agent(
+        self.llm(),
+        tools=self.mcp_tools,  # MCP サーバーから取得されたツールが含まれる
+        prompt=make_system_prompt("...")
+    )
+```
+
+#### MCP サーバーの設定
+
+- MCP サーバーのポートは `.env` ファイルの `MCP_SERVER_PORT` で設定します（デフォルト: 9000）。
+- インフラストラクチャ設定は `infra/infra/agent.py` の `get_mcp_custom_model_runtime_parameters()` で管理されます。
+
+#### DataRobot ToolClient の直接利用（非推奨）
+
+特別な理由がない限り、`ToolClient` の直接利用は避けてください。ただし、レガシーコードや特殊なケースでは以下のように使用できます。
+
+```python
+from datarobot_genai.tool import ToolClient
+
+def tool_execution_node(self, state: AgentState):
+    client = ToolClient(api_key=self.api_key, base_url=self.endpoint)
+    result = client.execute_tool("tool_name", arguments={...})
+    return {...}
+```
+
+**MCP ツールを使うメリット:**
+- ✅ ツールの定義が一元管理される
+- ✅ フロントエンドとの統合が容易
+- ✅ ツールのテストが独立して可能
+- ✅ デプロイ時の環境変数管理が簡単
+
+## 4. エラーハンドリングとセキュリティ
+
+**セキュリティ**: APIキー、アクセストークン、パスワードはいかなる場合もコードに埋め込まないでください。環境変数（`os.environ`）または設定オブジェクトから読み込んでください。
+
+**例外処理**: LLMの呼び出しや外部API通信は失敗する可能性があります。`try-except` ブロックを使用し、エージェントがクラッシュせずに適切にエラー状態へ遷移するか、リトライを行うように設計してください。
