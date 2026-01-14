@@ -43,6 +43,104 @@ def node_generation(self, state: AgentState):
 **ステート管理**:
 エージェントの状態は必ず `typing.TypedDict` を継承したクラス（例: `AgentState`）として定義し、明示的な型注釈を付けてください。
 
+**DRUM制約 - LangGraphエージェント起動時の入力制限**:
+LangGraphはDataRobot DRUM（DataRobot User Model）環境で動作するため、**エージェントの起動時（最初の入力）**には以下の制約が適用されます：
+
+- **単一引数のみ許可**: エージェントへの初期入力は**必ず単一の引数**（通常は文字列）のみ受け付けます。
+- **JSON文字列は使用可能**: 複数の情報を渡す必要がある場合、JSON形式の文字列として渡し、エージェント内部でパースすることができます。
+- **複雑な構造の対応**: ネストされたオブジェクトや配列もJSON文字列化すれば対応可能です。
+
+```python
+# 正しいパターン (Good) - エージェント起動
+
+# パターン1: 単純な文字列入力
+def run_agent_simple(input_text: str):
+    """単一の文字列でエージェントを起動"""
+    result = agent.invoke({"input": input_text})
+    return result
+
+# パターン2: JSON文字列を使った複雑な入力（推奨）
+def run_agent_with_json(json_input: str):
+    """JSON文字列化した情報を受け取る"""
+    import json
+    
+    # エージェント内部でパース
+    try:
+        params = json.loads(json_input)
+        # パースした情報をStateに設定
+        initial_state = {
+            "input": params.get("query", ""),
+            "context": params.get("context", ""),
+            "options": params.get("options", {}),
+            "messages": []
+        }
+        result = agent.invoke(initial_state)
+        return result
+    except json.JSONDecodeError:
+        # JSON形式でない場合は通常の文字列として扱う
+        result = agent.invoke({"input": json_input})
+        return result
+
+# パターン3: エージェントクラス内でのパース処理
+class MyAgent(LangGraphAgent):
+    def invoke(self, input_data: dict) -> dict:
+        """入力を受け取り、必要に応じてJSON文字列をパース"""
+        user_input = input_data.get("input", "")
+        
+        # JSON形式かどうかを判定してパース
+        if isinstance(user_input, str) and user_input.strip().startswith("{"):
+            try:
+                parsed_input = json.loads(user_input)
+                # パースした情報でStateを更新
+                input_data.update({
+                    "input": parsed_input.get("query", user_input),
+                    "phase": parsed_input.get("phase", "discover"),
+                    "target_url": parsed_input.get("target_url"),
+                    "pain_points": parsed_input.get("pain_points", [])
+                })
+            except json.JSONDecodeError:
+                # パースに失敗した場合はそのまま使用
+                pass
+        
+        return super().invoke(input_data)
+
+# 誤ったパターン (Bad)
+def bad_run_agent(query: str, context: str, options: dict):
+    """複数引数での起動は不可 - DRUMの制約に違反"""
+    # このパターンは動作しません
+    pass
+
+def bad_run_agent_dict(input_dict: dict):
+    """辞書型を直接渡すことは不可 - 文字列化が必要"""
+    # このパターンは動作しません
+    result = agent.invoke(input_dict)
+    pass
+```
+
+**実際の使用例**:
+
+```python
+# CLI経由でのテスト
+# task agent:cli START_DEV=1 -- execute --user_prompt '{"target_url": "https://example.com", "phase": "discover"}'
+
+# Python コード内での呼び出し
+import json
+
+agent_input = json.dumps({
+    "target_url": "https://datarobot.com",
+    "phase": "deep_dive",
+    "discovered_pain_points": ["コスト削減", "効率化"],
+    "department": "営業部"
+})
+
+result = agent.invoke({"input": agent_input})
+```
+
+**重要な注意点**:
+1. **エージェントの起動時のインターフェースは単一引数のみ**: 関数シグネチャは `def invoke(input: str)` または `def invoke(input_data: dict)` の形式で、`dict` の場合も `{"input": "..."}` のように単一のキーを持つ辞書として渡されます。
+2. **JSON文字列のパースはエージェント内部で行う**: クライアント側でJSON文字列化してから送信し、エージェント側でパースします。
+3. **MCPツールの制約ではない**: この制約はエージェントの起動時のみに適用されます。MCPツールの定義では通常通り複数引数やJSON型を使用できます。
+
 ### 2.2 フロントエンド開発 (frontend_web/)
 
 **TypeScript厳守**: すべてのコンポーネントとロジックはTypeScriptで記述してください。`any` 型の使用は極力避け、インターフェースを定義してください。
@@ -119,7 +217,7 @@ class MyAgent:
 
 **1. ツールの定義 (user_tools.py)**
 
-新しいツールを定義します。
+新しいツールを定義します。MCPツールは通常通り複数の引数を持つことができます。
 
 ```python
 from datarobot_genai.drmcp import dr_mcp_tool
@@ -128,21 +226,22 @@ import logging
 logger = logging.getLogger(__name__)
 
 @dr_mcp_tool(tags={"custom", "integration"})
-async def my_custom_tool(argument1: str, argument2: int) -> str:
+async def my_custom_tool(argument1: str, argument2: int, options: dict = None) -> str:
     """
     カスタムツールの説明。LLMがこの説明を読んでツールの使い方を判断します。
     
     Args:
         argument1: 第一引数の説明
         argument2: 第二引数の説明
+        options: オプションのパラメータ（辞書型）
     
     Returns:
         処理結果の説明
     """
-    logger.info(f"Custom tool called with: {argument1}, {argument2}")
+    logger.info(f"Custom tool called with: {argument1}, {argument2}, {options}")
     
     # ここにツールのロジックを実装
-    result = perform_operation(argument1, argument2)
+    result = perform_operation(argument1, argument2, options)
     
     return result
 ```
@@ -190,3 +289,334 @@ def tool_execution_node(self, state: AgentState):
 **セキュリティ**: APIキー、アクセストークン、パスワードはいかなる場合もコードに埋め込まないでください。環境変数（`os.environ`）または設定オブジェクトから読み込んでください。
 
 **例外処理**: LLMの呼び出しや外部API通信は失敗する可能性があります。`try-except` ブロックを使用し、エージェントがクラッシュせずに適切にエラー状態へ遷移するか、リトライを行うように設計してください。
+
+## 5. テスト戦略とローカル実行
+
+このアプリケーションテンプレートは、`task` コマンドを使用した統合テスト環境を提供しています。
+
+### 5.1 Task コマンドによるテスト実行
+
+**アプリケーション全体の起動**:
+全コンポーネント（フロントエンド、バックエンド、エージェント、MCPサーバー）を同時に起動してE2Eテストを行う場合：
+
+```bash
+task dev
+```
+
+このコマンドは以下のサービスを自動的に起動します：
+- Frontend Web: http://localhost:5173
+- FastAPI Server: http://localhost:8080
+- Agent: http://localhost:8842
+- MCP Server: http://localhost:9000
+
+**個別コンポーネントの起動**:
+特定のコンポーネントのみをテストする場合：
+
+```bash
+task agent:dev           # エージェントのみ起動
+task mcp_server:dev      # MCPサーバーのみ起動
+task fastapi_server:dev  # FastAPIサーバーのみ起動
+task frontend_web:dev    # フロントエンドのみ起動
+```
+
+### 5.2 Agent CLI による統合テスト
+
+**自動起動モード (推奨)**:
+開発サーバーを自動的に起動してテストを実行します。このモードでは、テスト完了後にサーバーが自動的に停止します。
+
+```bash
+# 単純な文字列入力でテスト
+task agent:cli START_DEV=1 -- execute --user_prompt 'Tell me about Generative AI'
+
+# JSON形式の入力でテスト
+task agent:cli START_DEV=1 -- execute --user_prompt '{"topic": "Artificial Intelligence"}'
+
+# ストリーミングレスポンスのテスト
+task agent:cli START_DEV=1 -- execute --user_prompt 'Explain machine learning' --stream
+
+# 完全な出力を表示
+task agent:cli START_DEV=1 -- execute --user_prompt 'What is DataRobot?' --show_output
+```
+
+**手動起動モード**:
+長時間のテストや複数回のテスト実行時は、手動でサーバーを起動しておく方が効率的です。
+
+```bash
+# 1. 別ターミナルでエージェントを起動
+task agent:dev
+
+# 2. テストを実行（START_DEV=1 は不要）
+task agent:cli -- execute --user_prompt 'Tell me about Generative AI'
+```
+
+### 5.3 デプロイメントテスト
+
+**カスタムモデルのテスト**:
+DataRobot上にデプロイされたカスタムモデルをテストする場合：
+
+```bash
+task agent:cli -- execute-custom-model \
+  --user_prompt 'Artificial Intelligence' \
+  --custom_model_id <YOUR_CUSTOM_MODEL_ID>
+```
+
+**デプロイメントのテスト**:
+DataRobot上にデプロイされたエージェントをテストする場合：
+
+```bash
+task agent:cli -- execute-deployment \
+  --user_prompt 'Artificial Intelligence' \
+  --deployment_id <YOUR_DEPLOYMENT_ID>
+
+# ストリーミング有効
+task agent:cli -- execute-deployment \
+  --user_prompt 'Tell me about AI' \
+  --deployment_id <YOUR_DEPLOYMENT_ID> \
+  --stream
+```
+
+### 5.4 MCPツールのインタラクティブテスト
+
+MCPサーバーのツールをインタラクティブにテストする場合：
+
+```bash
+task mcp:test-interactive
+```
+
+このコマンドは以下を実行します：
+- MCPサーバーの起動
+- AIエージェントとの接続
+- 対話型チャットインターフェースの提供
+- リアルタイムのデバッグ出力
+
+### 5.5 テストコード記述時の推奨パターン
+
+**既存のテストファイルの活用**:
+新しいテストを追加する場合は、既存のテストファイル構造を尊重してください：
+
+- **`agent/tests/test_mcp.py`**: エージェントとMCPツールの統合テストを含む既存ファイル
+  - モックを使ったユニットテスト
+  - `task` コマンドを使った実統合テスト
+  - **新しいMCPツールのテストはこのファイルに追加することを推奨**
+
+```python
+# agent/tests/test_mcp.py に新しいテストクラスを追加する例
+
+class TestNewMCPToolIntegration:
+    """新しいMCPツールの統合テスト"""
+    
+    @pytest.mark.timeout(300)
+    def test_new_tool_with_real_agent(self):
+        """新しいツールの実統合テスト - task コマンド使用"""
+        result = subprocess.run(
+            [
+                "task", "agent:cli", "START_DEV=1", "--",
+                "execute",
+                "--user_prompt", "新しいツールを使ってテスト"
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300
+        )
+        
+        assert result.returncode == 0, f"Command failed: {result.stderr}"
+        assert "期待される結果" in result.stdout
+        assert "Error" not in result.stderr
+    
+    @patch("datarobot_genai.langgraph.mcp.load_mcp_tools", new_callable=AsyncMock)
+    def test_new_tool_with_mock(
+        self, mock_load_mcp_tools, langgraph_common_mocks
+    ):
+        """新しいツールのモックテスト"""
+        async def mock_new_tool(ctx, param: str):
+            return {"result": f"Processed: {param}"}
+        
+        mock_new_tool.__name__ = "new_tool_name"
+        mock_new_tool.__doc__ = "新しいツールの説明"
+        
+        mock_tools = [mock_new_tool]
+        mock_load_mcp_tools.return_value = mock_tools
+        langgraph_common_mocks.set_mcp_tools(mock_tools)
+        
+        with patch.dict(
+            os.environ,
+            {"EXTERNAL_MCP_URL": "http://localhost:9000/mcp"},
+            clear=True
+        ):
+            agent = MyAgent(api_key="test_key", api_base="test_base", verbose=True)
+            
+            assert len(agent.mcp_tools) == 1
+            assert agent.mcp_tools[0].__name__ == "new_tool_name"
+            
+            result = asyncio.run(
+                agent.mcp_tools[0](ctx=None, param="test")
+            )
+            assert result["result"] == "Processed: test"
+```
+
+- **`mcp_server/app/tests/unit/`**: MCPツール自体の単体テストを配置
+  - 新しいツールの機能テスト
+  - エラーハンドリングのテスト
+  - エージェントから独立したツールのロジック検証
+
+```python
+# mcp_server/app/tests/unit/test_user_tools.py に追加する例
+import pytest
+from app.tools.user_tools import new_custom_tool
+
+class TestNewCustomTool:
+    """新しいMCPツールの単体テスト"""
+    
+    @pytest.mark.asyncio
+    async def test_valid_input(self):
+        """有効な入力の処理テスト"""
+        result = await new_custom_tool("valid_input")
+        
+        assert "expected_field" in result
+        assert isinstance(result["expected_field"], str)
+    
+    @pytest.mark.asyncio
+    async def test_invalid_input(self):
+        """無効な入力のエラーハンドリング"""
+        with pytest.raises(ValueError):
+            await new_custom_tool("invalid_input")
+    
+    @pytest.mark.asyncio
+    async def test_edge_case(self):
+        """エッジケースの処理"""
+        result = await new_custom_tool("")
+        assert result is not None
+```
+
+**テストファイルの使い分け**:
+
+1. **`agent/tests/test_mcp.py` を使う場合**:
+   - ✅ エージェントがMCPツールを正しく呼び出せるか検証したい
+   - ✅ `task agent:cli START_DEV=1` による実統合テストを行いたい
+   - ✅ エージェントのワークフロー全体をテストしたい
+   - ✅ 複数のMCPツールの連携動作を確認したい
+
+2. **`mcp_server/app/tests/unit/` を使う場合**:
+   - ✅ MCPツールの個別機能を単体テストしたい
+   - ✅ ツールのロジックやエラーハンドリングを検証したい
+   - ✅ エージェントから独立してツールをテストしたい
+   - ✅ 高速な単体テストを書きたい
+
+**統合テストの記述**:
+エージェント全体の動作を検証する統合テストでは、`task` コマンドを使用したスクリプトテストを推奨します。
+
+```python
+# agent/tests/test_mcp.py に追加する統合テストの例
+import subprocess
+import json
+
+class TestArchitectWorkflowIntegration:
+    """Architectワークフローの統合テスト"""
+    
+    @pytest.mark.timeout(300)
+    def test_agent_discovery_phase(self):
+        """Discovery Phaseの統合テスト"""
+        result = subprocess.run(
+            [
+                "task", "agent:cli", "START_DEV=1", "--",
+                "execute",
+                "--user_prompt", "企業URL: https://example.com を分析してください"
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300
+        )
+        
+        assert result.returncode == 0, f"Command failed: {result.stderr}"
+        assert "企業情報" in result.stdout
+        assert "課題" in result.stdout
+
+    @pytest.mark.timeout(300)
+    def test_agent_deep_dive_phase(self):
+        """Deep Dive Phaseの統合テスト"""
+        input_data = {
+            "phase": "deep_dive",
+            "discovered_pain_points": ["コスト削減", "効率化"]
+        }
+        
+        result = subprocess.run(
+            [
+                "task", "agent:cli", "START_DEV=1", "--",
+                "execute",
+                "--user_prompt", json.dumps(input_data)
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300
+        )
+        
+        assert result.returncode == 0
+        assert "Lv1" in result.stdout
+        assert "Lv2" in result.stdout
+        assert "Lv3" in result.stdout
+```
+
+**ユニットテストの記述**:
+個別のノードやツールのテストは、従来のpytestパターンを使用します。
+
+```python
+# agent/tests/test_mcp.py のモックテストセクションに追加する例
+import pytest
+from agentic_workflow.agent import MyAgent
+
+@pytest.fixture
+def agent():
+    return MyAgent()
+
+def test_discover_research_node(agent, langgraph_common_mocks):
+    """リサーチノードの単体テスト"""
+    # モックMCPツールを設定
+    mock_tools = [
+        create_mock_mcp_tool("analyze_target_url"),
+        create_mock_mcp_tool("search_web"),
+    ]
+    langgraph_common_mocks.set_mcp_tools(mock_tools)
+    
+    # ノードのテストロジック
+    # ...
+```
+
+### 5.6 CI/CDでのテスト実行
+
+GitHub ActionsなどのCI環境では、`START_DEV=1` モードを使用して自動テストを実行できます：
+
+```yaml
+# .github/workflows/agent-integration-test.yml
+- name: Run Agent Integration Tests
+  run: |
+    task agent:cli START_DEV=1 -- execute --user_prompt 'Test prompt'
+```
+
+### 5.7 テスト時の注意事項
+
+**環境変数の設定**:
+テスト実行前に `.env` ファイルが正しく設定されていることを確認してください。特に以下の変数が必須です：
+- `DATAROBOT_API_TOKEN`
+- `DATAROBOT_ENDPOINT`
+- `LLM_DEPLOYMENT_ID` または `LLM_DEFAULT_MODEL`
+
+**ポートの競合**:
+複数のテストを並行実行する場合、ポートの競合に注意してください。`START_DEV=1` モードでは自動的にポートのクリーンアップが行われますが、手動起動の場合は明示的に停止が必要です。
+
+```bash
+# エージェント開発サーバーの停止
+task agent:dev-stop
+
+# 全てのローカルプロセスをクリーンアップ
+pkill -f "uv run python dev.py"
+pkill -f "uvicorn app.main:app"
+```
+
+**タイムアウトの設定**:
+LLMを使用するテストは時間がかかる可能性があるため、適切なタイムアウトを設定してください：
+
+```python
+@pytest.mark.timeout(300)  # 5分のタイムアウト
+def test_long_running_agent():
+    # ...
+```
