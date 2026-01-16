@@ -151,6 +151,103 @@ React Hooks (`useState`, `useEffect`, `useContext`) を活用した関数コン�
 **API通信**:
 バックエンド（FastAPI）との通信は非同期で行い、エージェントからのストリーミング応答（Streaming Response）を適切に処理できる実装を優先してください。
 
+**セッション管理**:
+チャットセッションの保存には、特に指定がない限り**SQLiteをデフォルト**として使用してください。既存の `useChatList`, `useAddChat`, `ChatSidebar` コンポーネントを活用し、セッション履歴の永続化を行います。
+
+**カラーガイドライン**:
+ブランドカラーは以下の3つのカテゴリーに分類されます：
+
+- **Brand Key Colour**: 
+  - `GREEN (#81FBA5)` - ブランドのキーカラーとして目立つ位置に配置してください
+  
+- **Base Colors** (テキストと背景用):
+  - `BLACK` - 主要テキスト
+  - `GREY` - セカンダリテキスト、ボーダー
+  - `WHITE` - 背景、カード
+
+- **Accent Colors** (背景、イラスト、パターン、強調要素用):
+  - `PURPLE` - アクセント、特殊な強調
+  - `INDIGO` - アクセント
+  - `BLUE` - リンク、インタラクティブ要素
+  - `YELLOW` - 警告、注意喚起
+
+**視認性とコントラストの原則（重要）**:
+- ✅ **黒背景には必ず明るいテキスト**: `bg-gray-900`や`bg-black`には`text-white`、`text-gray-100`、または`text-[#81FBA5]`を使用
+- ✅ **白背景には濃いテキスト**: `bg-white`や`bg-gray-50`には`text-gray-900`、`text-gray-800`を使用
+- ✅ **ダークテーマでのカード**: `bg-gray-800` に `text-white` または `text-gray-100` を使用し、ボーダーは `border-gray-700`
+- ✅ **カード要素には必ず明示的な背景色**: `<Card>`コンポーネントには必ず`bg-white`または`bg-gray-800`を指定し、テキスト色も明示的に指定すること
+- ✅ **コントラスト比の確保**: WCAG AA基準（最低4.5:1）を満たすこと
+- ✅ **アクセントバーの活用**: セクションタイトルの左側に`w-1 h-6 bg-[#81FBA5]`の縦線を追加して視認性向上
+- ✅ **ラベルの明確化**: ダークテーマでは`text-xs font-medium text-gray-400 uppercase tracking-wider`で可読性向上
+- ✅ **flex-shrink-0の活用**: アイコンやバッジが縮まないよう`flex-shrink-0`を指定
+- ❌ **禁止パターン**: 同系色の組み合わせ（例: `bg-gray-900`に`text-gray-900`）は絶対に避ける
+- ❌ **背景色の省略禁止**: カードやボックス要素で背景色を省略すると、環境によって黒背景になり文字が見えなくなる
+
+これらのガイドラインに従い、UIコンポーネントやスタイリングを実装してください。
+
+**フロントエンド実装の成功パターン（Phase 3で確立）**:
+- ✅ **ラベルの明確化**: 小さなラベルは`text-xs font-medium text-gray-500 uppercase tracking-wider`で可読性向上
+- ✅ **flex-shrink-0の活用**: アイコンやバッジが縮まないよう`flex-shrink-0`を指定
+- ❌ **禁止パターン**: 同系色の組み合わせ（例: `bg-gray-900`に`text-gray-900`）は絶対に避ける
+- ❌ **背景色の省略禁止**: カードやボックス要素で背景色を省略すると、環境によって黒背景になり文字が見えなくなる
+
+これらのガイドラインに従い、UIコンポーネントやスタイリングを実装してください。
+
+**フロントエンド実装の成功パターン（Phase 3で確立）**:
+
+1. **エージェントとの通信は必ずプレーンテキスト**:
+   - JSON文字列を送信しない
+   - 自然言語でプロンプトを構築（例: `buildDiscoveryPrompt`, `buildDeepDivePrompt`）
+   - エージェントはプレーンテキストを受け取り、内部で処理
+
+2. **エージェントの出力はJSON形式を推奨**:
+   - **重要**: 構造化されたデータ（リスト、複数フィールド、階層構造）をフロントエンドで表示する場合、エージェントにJSON形式での出力を要求することを強く推奨
+   - プロンプトに「必ず以下のJSON形式で回答してください」と明示し、期待するスキーマを提示
+   - JSON抽出のフォールバック処理を実装（```json ... ``` ブロック、またはコードフェンスなしの { ... } ブロック）
+   - テキストベースの正規表現パターンマッチングよりも、JSON形式の方が確実で保守しやすい
+   
+   ```typescript
+   // 良い例: JSON形式での抽出
+   const jsonMatch = textContent.match(/```json\s*([\s\S]*?)\s*```/);
+   if (jsonMatch) {
+     const data = JSON.parse(jsonMatch[1]);
+     setProposals(data.proposals);
+   }
+   
+   // 代替: コードフェンスなしのJSON
+   const jsonStart = textContent.indexOf('{');
+   const jsonEnd = textContent.lastIndexOf('}');
+   if (jsonStart !== -1 && jsonEnd !== -1) {
+     const jsonStr = textContent.substring(jsonStart, jsonEnd + 1);
+     const data = JSON.parse(jsonStr);
+   }
+   ```
+
+3. **useEffect でストリーミング応答を監視**:
+   - `combinedEvents` を監視して、AIの応答から必要な情報を抽出
+   - `isAgentRunning` が false になったタイミングで抽出処理を実行
+   - 正規表現やパターンマッチングで構造化データを取得
+
+3. **段階的なUI展開（Progressive Disclosure）**:
+   - phase ステート (`'input' | 'discovery' | 'deep_dive'`) で UI を制御
+   - 前のステップの情報は常に表示したまま、新しいステップを追加
+   - ユーザーが進捗を把握しやすい設計
+
+4. **開発補助UIの活用**:
+   - 自動抽出機能の実装前は、手動入力UIを提供（黄色の補助ボックス）
+   - テストやデバッグに活用できるため、削除せず残しておく
+
+5. **既存パターンの活用**:
+   - `ChatProvider`, `ChatMessages`, `ChatProgress` などの既存コンポーネントを再利用
+   - セッション管理は `useChatList`, `ChatSidebar` で実装済み
+   - ルーティングは `routesConfig.tsx` で一元管理
+
+**レイアウトとUI構成の原則**:
+- ✅ **情報の優先度に応じた配置**: メインコンテンツ（入力・結果表示）とログエリアを50:50で配置し、両方のコンテンツを十分に表示
+- ✅ **視覚的な統一感**: ダークテーマを採用する場合は、全体を`bg-gray-900`に統一し、カードは`bg-gray-800`、ボーダーは`border-gray-700`で統一
+- ✅ **最大幅の設定**: コンテンツが広がりすぎないよう`max-w-3xl`などで可読性を確保
+- ✅ **明確な境界線**: ダークテーマではエリア間のボーダーを`border-gray-700`で区切る
+
 ### 2.3 ディレクトリ・スコープ
 
 コードの提案を行う際は、ユーザーの意図するディレクトリコンテキストを遵守してください。
@@ -163,7 +260,118 @@ React Hooks (`useState`, `useEffect`, `useContext`) を活用した関数コン�
 
 ### 3.1 LangGraph 実装パターン
 
-エージェントを構築する際は、以下のボイラープレート構造を意識してください。
+エージェントを構築する際は、以下の実装パターンを推奨します。
+
+#### 🌟 推奨パターン: ReAct + MCP ツール統合
+
+**MCPツールを活用する場合は、ReActパターンを使用することを強く推奨します。**このパターンでは、LLMが自動的に適切なツールを選択・実行するため、複雑なグラフ構造やノード定義が不要になります。
+
+```python
+from typing import Any
+from datarobot_genai.langgraph.agent import LangGraphAgent
+from datarobot_genai.core.agents import make_system_prompt
+from langgraph.graph import END, START, MessagesState, StateGraph
+from langgraph.prebuilt import create_react_agent
+from langchain_core.prompts import ChatPromptTemplate
+
+class MyAgent(LangGraphAgent):
+    """エージェントの説明をここに記述"""
+
+    @property
+    def workflow(self) -> StateGraph[MessagesState]:
+        """シンプルなReActワークフロー"""
+        langgraph_workflow = StateGraph[
+            MessagesState, None, MessagesState, MessagesState
+        ](MessagesState)
+        langgraph_workflow.add_node("agent", self.agent)
+        langgraph_workflow.add_edge(START, "agent")
+        langgraph_workflow.add_edge("agent", END)
+        return langgraph_workflow  # type: ignore[return-value]
+
+    @property
+    def prompt_template(self) -> ChatPromptTemplate:
+        """{{topic}}などのテンプレート変数を受け取る"""
+        return ChatPromptTemplate.from_messages(
+            [
+                ("user", "The topic is {{topic}}. タスクの説明をここに記述。"),
+            ]
+        )
+
+    @property
+    def agent(self) -> Any:
+        """ReActパターンでMCPツールを自動的に使い分けるエージェント"""
+        return create_react_agent(
+            self.llm(preferred_model="datarobot/azure/gpt-5-mini-2025-08-07"),
+            tools=self.mcp_tools,  # MCPツールが自動的に利用可能
+            prompt=make_system_prompt(
+                "あなたの役割と指示をここに記述。\n"
+                "\n"
+                "## 利用可能なツール\n"
+                "- `tool_name_1`: ツールの説明\n"
+                "- `tool_name_2`: ツールの説明\n"
+                "\n"
+                "## ワークフロー\n"
+                "1. ステップ1の説明\n"
+                "2. ステップ2の説明\n"
+                "\n"
+                "必要に応じてツールを使い分け、最適な結果を生成してください。"
+            ),
+            name="Agent Name",
+        )
+```
+
+**ReActパターンの利点:**
+- ✅ **自動ツール選択**: LLMが状況に応じて最適なツールを自動的に選択・実行
+- ✅ **シンプルな実装**: 複雑なノードやエッジの定義が不要
+- ✅ **柔軟性**: システムプロンプトの変更だけで振る舞いを調整可能
+- ✅ **保守性**: コード量が少なく、理解・修正が容易
+
+**エージェント出力のベストプラクティス:**
+
+構造化されたデータ（リスト、複数フィールド、階層構造）をフロントエンドに返す場合は、**JSON形式での出力を強く推奨**します。
+
+```python
+@property
+def prompt_template(self) -> ChatPromptTemplate:
+    """JSON形式での出力を要求するプロンプト例"""
+    return ChatPromptTemplate.from_messages(
+        [
+            ("user", 
+             "以下の課題に対する解決策を提案してください。\n\n"
+             "課題: {{pain_point}}\n\n"
+             "**重要**: 必ず以下のJSON形式で回答してください：\n\n"
+             "```json\n"
+             "{\n"
+             '  "proposals": [\n'
+             "    {\n"
+             '      "level": "lv1",\n'
+             '      "levelName": "The Analyst (梅)",\n'
+             '      "title": "レベル1のタイトル",\n'
+             '      "description": "概要説明",\n'
+             '      "whatAgentDoes": ["処理1", "処理2"],\n'
+             '      "effortSaved": "削減される工数の説明",\n'
+             '      "tools": ["ツール1", "ツール2"],\n'
+             '      "estimatedCost": "¥XX,XXX〜¥XX,XXX/月",\n'
+             '      "timeline": "X週間",\n'
+             '      "humanRole": "人間の役割"\n'
+             "    }\n"
+             "  ]\n"
+             "}\n"
+             "```\n"
+            ),
+        ]
+    )
+```
+
+**JSON出力の利点:**
+- ✅ **データの完全性**: 文字数制限で途中で切れることがない
+- ✅ **型安全性**: フロントエンドでTypeScriptの型定義と一致
+- ✅ **保守性**: 正規表現によるパースよりも確実で、スキーマ変更が容易
+- ✅ **追加ライブラリ不要**: react-markdownなどの追加依存がなくても複雑な構造を表現可能
+
+#### 従来パターン: StateGraph + カスタムノード
+
+**特殊な制御フローが必要な場合のみ使用してください。**MCPツールを使わない、または複雑な条件分岐・状態管理が必要な場合に適しています。
 
 ```python
 from langgraph.graph import StateGraph, END
@@ -195,9 +403,9 @@ class MyAgent:
         self.app = workflow.compile()
 
     # 3. 必須のLLMラッパー
-    def llm(self):
-        from datarobot_genai.llm import build_llm
-        return build_llm()
+    def llm(self, preferred_model: str | None = None):
+        # self.llm() を使用してモデルを取得
+        pass
 
     # 4. ノード実装
     def research_node(self, state: AgentState):
@@ -209,13 +417,18 @@ class MyAgent:
         return {"intermediate_steps": [("generate", "done")]}
 ```
 
-### 3.2 外部ツール統合パターン
+**このパターンを使うべき場合:**
+- 明示的な状態遷移が必要な複雑なワークフロー
+- 条件分岐やループを含むフロー制御
+- MCPツールを使用しない独自のロジック実装
+
+### 3.2 MCP ツール統合パターン
 
 エージェントに新しい機能を追加する場合は、**MCP (Model Context Protocol) サーバー経由でツールを統合**することを推奨します。
 
 #### MCP ツールの作成方法
 
-**1. ツールの定義 (user_tools.py)**
+**1. ツールの定義 (mcp_server/app/tools/user_tools.py)**
 
 新しいツールを定義します。MCPツールは通常通り複数の引数を持つことができます。
 
@@ -246,19 +459,38 @@ async def my_custom_tool(argument1: str, argument2: int, options: dict = None) -
     return result
 ```
 
-**2. エージェントでの利用 (agent.py)**
+**2. エージェントでの利用 (agent/agentic_workflow/agent.py)**
 
-MCP ツールは `self.mcp_tools` として自動的に利用可能になります。
+MCPツールは`self.mcp_tools`として自動的に利用可能になります。**ReActパターンと組み合わせることを強く推奨します。**
 
 ```python
+from langgraph.prebuilt import create_react_agent
+from datarobot_genai.core.agents import make_system_prompt
+
 @property
-def agent_planner(self) -> Any:
+def agent(self) -> Any:
+    """ReActパターンでMCPツールを自動的に使い分けるエージェント"""
     return create_react_agent(
-        self.llm(),
-        tools=self.mcp_tools,  # MCP サーバーから取得されたツールが含まれる
-        prompt=make_system_prompt("...")
+        self.llm(preferred_model="datarobot/azure/gpt-5-mini-2025-08-07"),
+        tools=self.mcp_tools,  # MCPサーバーから取得されたツールが自動的に含まれる
+        prompt=make_system_prompt(
+            "あなたの役割の説明。\n"
+            "\n"
+            "## 利用可能なツール\n"
+            "- `my_custom_tool`: ツールの簡単な説明\n"
+            "\n"
+            "必要に応じてツールを使用して、最適な結果を生成してください。"
+        ),
+        name="Agent Name",
     )
 ```
+
+**重要な実装パターン:**
+- ✅ **`@property`デコレーターを使用**: エージェントをプロパティとして定義
+- ✅ **`preferred_model`を指定**: 明示的にモデルを指定（例: `"datarobot/azure/gpt-5-mini-2025-08-07"`）
+- ✅ **`tools=self.mcp_tools`**: MCPツールを渡す（自動的に利用可能）
+- ✅ **`make_system_prompt()`を使用**: システムプロンプトを適切に構築
+- ✅ **ツールの説明をプロンプトに含める**: LLMがツールの使い方を理解できるように
 
 #### MCP サーバーの設定
 
@@ -620,3 +852,219 @@ LLMを使用するテストは時間がかかる可能性があるため、適�
 def test_long_running_agent():
     # ...
 ```
+
+## 6. 重要な教訓とアンチパターン（2026年1月15日追記）
+
+### 6.1 Phase 3失敗の根本原因
+
+Phase 3のフロントエンド開発で発生した問題の**根本原因は1つだけ**でした：
+
+**❌ フロントエンドからJSON文字列をエージェントに送信したこと**
+
+これにより以下の連鎖的な問題が発生：
+1. JSON文字列を解析するために`convert_input_message`をオーバーライド
+2. カスタムState（`ArchitectState`）を定義して複雑な状態管理を実装
+3. DataRobotのストリーミング処理と非互換になり`ValueError: Invalid message event`
+
+### 6.2 本当にやってはいけないこと（入口の問題）
+
+#### 🚫 **アンチパターン: フロントエンドからJSON文字列を送信**
+
+#### 🚫 **アンチパターン: フロントエンドからJSON文字列を送信**
+
+**やってはいけないこと:**
+```typescript
+// ❌ BAD: フロントエンドからJSON文字列を送信
+const input = JSON.stringify({
+  target_url: "https://example.com",
+  department: "営業部",
+  pain_point: "コスト削減",
+  phase: "discover"
+});
+await sendMessage(input);  // これが問題の根源
+```
+
+**なぜダメなのか:**
+- エージェントの入口（ユーザー入力）がJSON文字列だと、パース処理が必要になる
+- パース処理のために`convert_input_message`をオーバーライドしたくなる
+- カスタムStateを定義したくなる
+- DataRobotのストリーミング処理と非互換になる
+
+**正しいパターン:**
+```typescript
+// ✅ GOOD: シンプルなプレーンテキスト送信
+await sendMessage("企業URL: https://example.com を分析してください");
+
+// ✅ GOOD: 会話の流れで情報を伝える
+await sendMessage("企業URL: https://example.com");
+await sendMessage("部署: 営業部");
+await sendMessage("既知の課題: コスト削減");
+await sendMessage("上記の情報で企業分析を開始してください");
+
+// ✅ GOOD: 自然言語で全て含める
+await sendMessage("企業URL https://example.com の営業部について分析してください。既知の課題はコスト削減です。");
+```
+
+### 6.3 実は問題なかったこと（誤解を解く）
+
+以下は**問題ではありませんでした**：
+
+#### ✅ **カスタムノードの使用（問題なし）**
+
+```python
+# ✅ GOOD: MessagesStateを使えばカスタムノードは問題ない
+class MyAgent(LangGraphAgent):
+    @property
+    def workflow(self) -> StateGraph[MessagesState]:
+        workflow = StateGraph[MessagesState, None, MessagesState, MessagesState](MessagesState)
+        
+        # カスタムノードは自由に定義できる
+        workflow.add_node("parse_input", self.parse_input_node)
+        workflow.add_node("router", self.router_node)
+        workflow.add_node("researcher", self.research_node)
+        workflow.add_node("generator", self.generate_node)
+        
+        # 複雑なフローも問題ない
+        workflow.add_edge(START, "parse_input")
+        workflow.add_conditional_edges("router", self.route_decision, {...})
+        
+        return workflow
+    
+    def parse_input_node(self, state: MessagesState):
+        # ノード内部での状態管理は自由
+        messages = state["messages"]
+        last_message = messages[-1].content
+        
+        # プレーンテキストからパラメータを抽出（LLMや正規表現で）
+        # ...
+        
+        return {"messages": [AIMessage(content="分析を開始します")]}
+```
+
+**重要なポイント:**
+- StateGraphの型は`MessagesState`を使う（カスタムStateDefは避ける）
+- ノード内部での状態管理は自由（変数、辞書、クラスなど）
+- 複雑なフロー制御も問題ない
+
+#### ✅ **エージェント内部でのJSON処理（問題なし）**
+
+```python
+# ✅ GOOD: ノード内部でJSONを生成・処理するのは問題ない
+def research_node(self, state: MessagesState):
+    # MCPツールにJSON形式で渡すのは問題ない
+    result = self.call_mcp_tool("analyze_target_url", {
+        "target_url": extracted_url,
+        "options": {"deep_analysis": True}
+    })
+    
+    # 内部的にJSON形式でデータを保持するのも問題ない
+    analysis_data = {
+        "company_name": result.get("name"),
+        "pain_points": result.get("pain_points", []),
+        "ai_maturity": result.get("ai_maturity")
+    }
+    
+    # MessagesStateに結果を追加
+    return {"messages": [AIMessage(content=format_report(analysis_data))]}
+```
+
+### 6.4 推奨アーキテクチャパターン
+
+#### パターン1: ReActパターン（シンプル、推奨）
+
+```python
+class MyAgent(LangGraphAgent):
+    @property
+    def workflow(self) -> StateGraph[MessagesState]:
+        workflow = StateGraph[MessagesState, None, MessagesState, MessagesState](MessagesState)
+        workflow.add_node("agent", self.agent)
+        workflow.add_edge(START, "agent")
+        workflow.add_edge("agent", END)
+        return workflow
+    
+    @property
+    def agent(self) -> Any:
+        return create_react_agent(
+            self.llm(preferred_model="datarobot/azure/gpt-4o-mini-2024-07-18"),
+            tools=self.mcp_tools,
+            prompt=make_system_prompt("詳細な指示..."),
+            name="Agent Name",
+        )
+```
+
+**メリット:**
+- シンプルで保守しやすい
+- ツールの選択をLLMに任せられる
+- デバッグが容易
+
+#### パターン2: カスタムノード（複雑なフロー向け）
+
+```python
+class MyAgent(LangGraphAgent):
+    @property
+    def workflow(self) -> StateGraph[MessagesState]:
+        workflow = StateGraph[MessagesState, None, MessagesState, MessagesState](MessagesState)
+        
+        workflow.add_node("parse", self.parse_node)
+        workflow.add_node("route", self.route_node)
+        workflow.add_node("phase1", self.phase1_node)
+        workflow.add_node("phase2", self.phase2_node)
+        
+        workflow.add_edge(START, "parse")
+        workflow.add_edge("parse", "route")
+        workflow.add_conditional_edges("route", self.decide_phase, {
+            "phase1": "phase1",
+            "phase2": "phase2"
+        })
+        workflow.add_edge("phase1", END)
+        workflow.add_edge("phase2", END)
+        
+        return workflow
+```
+
+**メリット:**
+- 明示的なフロー制御
+- 特定のノードで特定のツールを使用
+- デバッグポイントが明確
+
+**注意:**
+- 必ず`MessagesState`を使用
+- ノードは新しいメッセージのみ返す
+
+### 6.5 実装時のチェックリスト
+
+- [ ] **フロントエンドはプレーンテキスト送信**: JSON文字列を送らない
+- [ ] **StateGraphの型はMessagesState**: カスタムTypeDefを使わない
+- [ ] **ノードの戻り値はメッセージリスト**: `{"messages": [AIMessage(...)]}`
+- [ ] **会話履歴を活用**: state["messages"]から情報を取得
+- [ ] **ノード内部の状態管理は自由**: 変数、辞書、クラスなど好きに使える
+
+### 6.6 トラブルシューティング
+
+**症状: `ValueError: Invalid message event`**
+- 原因: カスタムState（TypeDict）を`StateGraph`の型引数に使っている
+- 解決: `StateGraph[MessagesState, None, MessagesState, MessagesState](MessagesState)`に変更
+
+**症状: エージェントが入力を理解しない**
+- 原因: フロントエンドがJSON文字列を送信している
+- 解決: プレーンテキストに変更
+
+**症状: ノード間で情報を共有できない**
+- 原因: ノード内部で状態管理していないか、MessagesStateを使っていない
+- 解決: state["messages"]から必要な情報を抽出、またはノード内部で辞書/クラスで管理
+
+### 6.7 まとめ
+
+**本当の問題:**
+- ❌ フロントエンドからJSON文字列を送信したこと（入口の問題）
+
+**誤解していたこと:**
+- ✅ カスタムノードは問題ない（MessagesStateを使えば）
+- ✅ 複雑なフロー制御は問題ない
+- ✅ ノード内部でのJSON処理は問題ない
+- ✅ ReActパターン以外も使える
+
+**正しい方針:**
+1. フロントエンドは**必ずプレーンテキスト**で送信
+2. StateGraphの型は**必ずMessagesState**を使用
+3. ノード内部の実装は自由（シンプルならReAct、複雑ならカスタムノード）
