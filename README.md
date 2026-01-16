@@ -1,6 +1,6 @@
 # copilot-instruction-kit
 
-GitHub Copilotを使用してエージェントアプリケーション（Agentic Applications）を開発する際の、効率的な指示書（Custom Instructions）テンプレート集です。
+GitHub Copilotを使用して[DataRobot Agent Application](https://github.com/datarobot-community/datarobot-agent-application)を開発する際の、効率的な指示書（Custom Instructions）です。
 
 ## 📦 セットアップ
 
