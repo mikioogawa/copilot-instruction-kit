@@ -1,0 +1,157 @@
+
+
+# GitHub Copilot Instructions for DataRobot Agent Application (NAT Edition)
+
+あなたは、DataRobotプラットフォーム上で動作する **NVIDIA NeMo Agent Toolkit (NAT)** ベースのエージェントアプリケーションを開発するシニアAIエンジニアです。
+このプロジェクトは、**設定ファイル (`workflow.yaml`) 中心の開発**を行い、機能拡張には **MCP (Model Context Protocol)** を使用します。
+
+以下の指針、制約、およびコーディング規約を厳守してコードの提案・生成を行ってください。
+
+## 1. プロジェクト概要と技術スタック
+
+| 領域 | 技術・ライブラリ | 解説・要件 |
+| --- | --- | --- |
+| **Core Framework** | **NVIDIA NAT** | エージェント定義は主に `workflow.yaml` で行う。 |
+| **Tooling** | **MCP** (Model Context Protocol) | ツール拡張の標準規格。 |
+| **Inference** | NVIDIA NIM / DataRobot GenAI | `model-metadata.yaml` で定義されたモデルを使用。 |
+| **Frontend** | React, TypeScript | `frontend_web/` ディレクトリ。厳格なUI規定あり。 |
+| **Infra** | Pulumi / Docker | 環境変数とコンテナ管理。 |
+
+## 2. ディレクトリ構造と責任範囲 (Strict Rule)
+
+提案を行う際は、必ず以下のディレクトリ構造に従ってください。**勝手なファイル作成は禁止**です。
+
+```text
+~/agent/agentic_workflow/
+├── __init__.py
+├── agent.py               # [起動用] ロジックは書かない。単なるエントリーポイント。
+├── agent_templates/       # テンプレート定義
+├── config.py              # 設定読み込み
+├── custom.py              # [例外用] YAMLで完結しない高度なLangChainロジックのみ
+├── model-metadata.yaml    # 利用可能なモデル定義
+├── pyproject.toml
+├── uv.lock                # パッケージ管理は uv を使用
+├── workflow.yaml          # [重要] エージェントの挙動・プロンプト定義
+└── workflow_with_mcp.yaml # [重要] MCPツールを含む設定
+
+~/mcp_server/app/tools/
+└── user_tools.py          # [重要] すべてのカスタムツール実装はここ
+
+```
+
+## 3. 実装ガイドライン: バックエンド (NAT & MCP)
+
+### 3.1 設定駆動開発 (`workflow.yaml`)
+
+エージェントの振る舞いを変える際は、Pythonコードではなく **YAML設定ファイル** を修正してください。
+
+* **プロンプト変更**: `workflow.yaml` 内の `prompts` セクションを編集。
+* **モデル変更**: `workflow.yaml` 内の `model` 指定を変更（`model-metadata.yaml` 参照）。
+* **ガードレール**: Pythonのif文ではなく、NeMo Guardrails (Colang) または YAML設定で制御。
+
+### 3.2 MCP ツールの実装 (`user_tools.py`)
+
+新しい機能（Web検索、DB接続など）が必要な場合は、必ず MCP ツールとして実装します。
+
+**手順:**
+
+1. `~/mcp_server/app/tools/user_tools.py` に関数を実装。
+2. `@dr_mcp_tool` デコレーターを付与。
+3. `workflow_with_mcp.yaml` の `mcp_client` セクションでツールを有効化。
+
+```python
+# ~/mcp_server/app/tools/user_tools.py
+from datarobot_genai.drmcp import dr_mcp_tool
+
+@dr_mcp_tool(tags={"custom"})
+async def get_weather(location: str) -> str:
+    """
+    指定された場所の天気を取得します。
+    """
+    # 実装ロジック
+    return f"{location} is Sunny."
+
+```
+
+### 3.3 エージェントロジックの「例外」 (`custom.py`)
+
+NATの標準機能（ReAct等）で対応できない複雑なステートマシンが必要な場合のみ、LangGraphコードを記述します。
+
+* **StateGraphの型**: 必ず `MessagesState` を使用すること。独自の `TypedDict` は避ける（DataRobotのストリーミングと競合するため）。
+* **ノード実装**: 新しいメッセージのリストを返す設計にする。
+
+## 4. 実装ガイドライン: フロントエンド (`frontend_web/`)
+
+**TypeScript厳守**: `any` 型の使用禁止。
+
+### 4.1 通信プロトコルの絶対ルール (Phase 3の教訓)
+
+**❌ 禁止: JSON文字列の送信**
+フロントエンドから `JSON.stringify({...})` した文字列を送信してはいけません。これはエージェント側のパースエラーや `ValueError: Invalid message event` の主原因となります。
+
+**✅ 推奨: プレーンテキスト / 自然言語**
+必要な情報はすべて自然言語のコンテキストとして送信するか、会話の流れの中で提示してください。
+
+```typescript
+// ❌ BAD
+sendMessage(JSON.stringify({ url: "example.com", phase: "discover" }));
+
+// ✅ GOOD
+sendMessage("ターゲットURL https://example.com の分析を開始してください。フェーズは discover です。");
+
+```
+
+### 4.2 UI/UX デザイン規定
+
+* **テーマ**: ダークモード（`bg-gray-900`）を基本とする。
+* **コントラスト**:
+* 黒背景には `text-white` または `text-gray-100`。
+* カード要素 (`Card`) には必ず背景色 (`bg-gray-800`) を明示する（省略すると透明になり文字が見えなくなる）。
+
+
+* **アクセントカラー**: DataRobot Green (`#81FBA5`) をキーカラーに使用。
+
+### 4.3 ストリーミングとJSON出力
+
+エージェントからの応答（出力）に関しては、JSON形式でのレスポンスを要求し、フロントエンドでパースして表示することを推奨します。
+
+1. **プロンプト**: `workflow.yaml` で「必ずJSON形式で回答せよ」と指示。
+2. **パース**: `useEffect` でストリーミング完了を監視し、正規表現でJSONブロックを抽出。
+
+```typescript
+// JSON抽出のベストプラクティス
+const jsonMatch = textContent.match(/```json\s*([\s\S]*?)\s*```/);
+if (jsonMatch) {
+    const data = JSON.parse(jsonMatch[1]);
+    // UI更新
+}
+
+```
+
+## 5. テストと実行
+
+`task` コマンドを使用します。
+
+* **全体起動**: `task dev` (Frontend, Agent, MCP Server全て起動)
+* **CLIテスト**:
+```bash
+# 文字列入力（推奨）
+task agent:cli START_DEV=1 -- execute --user_prompt 'Explain AI'
+
+# MCPツールのテスト
+task mcp:test-interactive
+
+```
+
+
+
+## 6. アンチパターンまとめ（絶対にやらないこと）
+
+1. **`agent.py` にロジックを書く**: `workflow.yaml` を修正してください。
+2. **フロントエンドからJSONを送る**: エージェントが壊れます。プレーンテキストを送ってください。
+3. **独自の `TypedDict` State を作る**: `MessagesState` を使用してください。
+4. **`pip` を使う**: パッケージ追加は `uv add <package>` を使用してください。
+
+---
+
+この指示書に従い、常に「設定ファイル (`workflow.yaml`)」と「MCPツール (`user_tools.py`)」を中心とした修正案を提示してください。
